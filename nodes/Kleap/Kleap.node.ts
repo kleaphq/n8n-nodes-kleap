@@ -13,6 +13,8 @@ import {
 	analyticsOperations,
 	appFields,
 	appOperations,
+	databaseFields,
+	databaseOperations,
 	domainFields,
 	domainOperations,
 	fileFields,
@@ -23,7 +25,9 @@ import {
 	taskOperations,
 } from './descriptions';
 import {
+	getTables,
 	kleapApiRequest,
+	parseJsonParameter,
 	publishAndWait,
 	resolveAppId,
 	searchApps,
@@ -56,6 +60,7 @@ export class Kleap implements INodeType {
 					{ name: 'Account', value: 'account' },
 					{ name: 'Analytics', value: 'analytics' },
 					{ name: 'App', value: 'app' },
+					{ name: 'Database', value: 'database' },
 					{ name: 'Domain', value: 'domain' },
 					{ name: 'File', value: 'file' },
 					{ name: 'Form Submission', value: 'formSubmission' },
@@ -73,6 +78,8 @@ export class Kleap implements INodeType {
 			...formFields,
 			analyticsOperations,
 			...analyticsFields,
+			databaseOperations,
+			...databaseFields,
 			accountOperations,
 			domainOperations,
 			...domainFields,
@@ -81,6 +88,7 @@ export class Kleap implements INodeType {
 
 	methods = {
 		listSearch: { searchApps },
+		loadOptions: { getTables },
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
@@ -232,6 +240,12 @@ async function runOperation(
 				return kleapApiRequest.call(this, 'PATCH', `/apps/${appId}`, {
 					name: this.getNodeParameter('name', i) as string,
 				});
+			case 'wake':
+				return kleapApiRequest.call(this, 'POST', `/apps/${appId}/wake`);
+			case 'getSearchConsole':
+				return kleapApiRequest.call(this, 'GET', `/apps/${appId}/search-console`);
+			case 'connectSearchConsole':
+				return kleapApiRequest.call(this, 'POST', `/apps/${appId}/search-console/connect`);
 			case 'generateImage': {
 				const imageOptions = this.getNodeParameter('imageOptions', i, {}) as IDataObject;
 				return kleapApiRequest.call(this, 'POST', `/apps/${appId}/generate-image`, {
@@ -309,6 +323,71 @@ async function runOperation(
 		}
 	}
 
+	if (resource === 'database') {
+		const appId = await resolveAppId.call(this, i);
+		const base = `/apps/${appId}/database`;
+		const table = () =>
+			`${base}/tables/${encodeURIComponent(this.getNodeParameter('table', i) as string)}/rows`;
+		switch (operation) {
+			case 'getSchema': {
+				const schema = await kleapApiRequest.call(this, 'GET', base);
+				return (schema.tables as IDataObject[]) ?? [];
+			}
+			case 'getRows': {
+				const returnAll = this.getNodeParameter('returnAll', i) as boolean;
+				const limit = returnAll ? Infinity : (this.getNodeParameter('limit', i) as number);
+				const where = parseJsonParameter.call(this, 'where', i, {}) as IDataObject;
+				const rowOptions = this.getNodeParameter('rowOptions', i, {}) as IDataObject;
+				const rows: IDataObject[] = [];
+				let offset = 0;
+				while (rows.length < limit) {
+					const qs: IDataObject = { limit: Math.min(500, limit - rows.length), offset };
+					if (Object.keys(where).length) qs.where = JSON.stringify(where);
+					if (rowOptions.orderBy) qs.order_by = rowOptions.orderBy;
+					if (rowOptions.order) qs.order = rowOptions.order;
+					const page = await kleapApiRequest.call(this, 'GET', table(), undefined, qs);
+					const batch = (page.rows as IDataObject[]) ?? [];
+					rows.push(...batch);
+					if (!page.has_more || !batch.length) break;
+					offset += batch.length;
+				}
+				return rows;
+			}
+			case 'insertRows': {
+				const row = parseJsonParameter.call(this, 'row', i, {}) as IDataObject;
+				const response = await kleapApiRequest.call(this, 'POST', table(), { rows: [row] });
+				const inserted = (response.rows as IDataObject[]) ?? [];
+				return inserted.length ? inserted : response;
+			}
+			case 'updateRows':
+			case 'deleteRows': {
+				const where = parseJsonParameter.call(this, 'where', i, {}) as IDataObject;
+				if (!Object.keys(where).length) {
+					throw new NodeOperationError(this.getNode(), 'Where must contain at least one condition', {
+						itemIndex: i,
+						description: 'This protects you from changing or deleting every row of the table by mistake.',
+					});
+				}
+				if (operation === 'deleteRows') {
+					return kleapApiRequest.call(this, 'DELETE', table(), { where });
+				}
+				const set = parseJsonParameter.call(this, 'set', i, {}) as IDataObject;
+				const response = await kleapApiRequest.call(this, 'PATCH', table(), { where, set });
+				const updated = (response.rows as IDataObject[]) ?? [];
+				return updated.length ? updated : response;
+			}
+			case 'runSql': {
+				const params = parseJsonParameter.call(this, 'params', i, []) as unknown[];
+				const response = await kleapApiRequest.call(this, 'POST', `${base}/query`, {
+					sql: this.getNodeParameter('sql', i) as string,
+					params: Array.isArray(params) ? params : [params],
+				});
+				const rows = (response.rows as IDataObject[]) ?? [];
+				return rows.length ? rows : { command: response.command, row_count: response.row_count };
+			}
+		}
+	}
+
 	if (resource === 'formSubmission' && operation === 'getMany') {
 		const appId = await resolveAppId.call(this, i);
 		const limit = Math.min(100, this.getNodeParameter('limit', i) as number);
@@ -349,6 +428,15 @@ async function runOperation(
 				if (tlds.length) body.tlds = tlds;
 				const response = await kleapApiRequest.call(this, 'POST', '/domains/search', body);
 				return (response.results as IDataObject[]) ?? [];
+			}
+			case 'buy': {
+				const body: IDataObject = {
+					domain: (this.getNodeParameter('domain', i) as string).trim().toLowerCase(),
+					years: this.getNodeParameter('years', i) as number,
+				};
+				const connectAppId = (this.getNodeParameter('connectAppId', i, '') as string).trim();
+				if (connectAppId) body.app_id = Number(connectAppId);
+				return kleapApiRequest.call(this, 'POST', '/domains/checkout', body);
 			}
 			case 'check': {
 				const domain = (this.getNodeParameter('domain', i) as string).trim();

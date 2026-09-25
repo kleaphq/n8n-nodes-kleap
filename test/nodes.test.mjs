@@ -204,3 +204,111 @@ test('trigger: manual test returns the latest submission', async () => {
 	assert.equal(out[0].json.id, 5);
 	assert.equal(out[0].json.app_id, 8);
 });
+
+test('database: getRows sends where as JSON and pages with has_more', async () => {
+	const seen = [];
+	const ctx = makeContext({
+		params: {
+			resource: 'database', operation: 'getRows', appId: app(10), table: 'leads', where: '{"status":"new"}',
+			returnAll: true, rowOptions: { orderBy: 'created_at', order: 'desc' },
+		},
+		http: (req) => {
+			seen.push(req);
+			assert.ok(req.url.endsWith('/apps/10/database/tables/leads/rows'));
+			assert.equal(req.qs.where, '{"status":"new"}');
+			assert.equal(req.qs.order_by, 'created_at');
+			return req.qs.offset === 0
+				? { rows: [{ id: 1 }, { id: 2 }], has_more: true }
+				: { rows: [{ id: 3 }], has_more: false };
+		},
+	});
+	const [out] = await run(ctx);
+	assert.deepEqual(out.map((o) => o.json.id), [1, 2, 3]);
+	assert.equal(seen[1].qs.offset, 2);
+});
+
+test('database: insert sends one row per item, update/delete refuse an empty where', async () => {
+	const insert = makeContext({
+		params: { resource: 'database', operation: 'insertRows', appId: app(10), table: 'leads', row: { email: 'a@b.c' } },
+		http: (req) => {
+			assert.equal(req.method, 'POST');
+			assert.deepEqual(req.body, { rows: [{ email: 'a@b.c' }] });
+			return { table: 'leads', inserted: 1, rows: [{ id: 9, email: 'a@b.c' }] };
+		},
+	});
+	const [[row]] = await run(insert);
+	assert.equal(row.json.id, 9);
+
+	for (const operation of ['updateRows', 'deleteRows']) {
+		const ctx = makeContext({
+			params: { resource: 'database', operation, appId: app(10), table: 'leads', where: '{}', set: '{"a":1}' },
+			http: () => assert.fail('must not call the API with an empty where'),
+		});
+		await assert.rejects(run(ctx), /at least one condition/);
+	}
+
+	const update = makeContext({
+		params: { resource: 'database', operation: 'updateRows', appId: app(10), table: 'leads', where: '{"id":9}', set: '{"status":"done"}' },
+		http: (req) => {
+			assert.equal(req.method, 'PATCH');
+			assert.deepEqual(req.body, { where: { id: 9 }, set: { status: 'done' } });
+			return { updated: 1, rows: [{ id: 9, status: 'done' }] };
+		},
+	});
+	const [[u]] = await run(update);
+	assert.equal(u.json.status, 'done');
+});
+
+test('database: runSql passes params and returns rows or the command summary', async () => {
+	const ctx = makeContext({
+		params: { resource: 'database', operation: 'runSql', appId: app(10), sql: 'UPDATE t SET a=$1', params: '[5]' },
+		http: (req) => {
+			assert.ok(req.url.endsWith('/apps/10/database/query'));
+			assert.deepEqual(req.body, { sql: 'UPDATE t SET a=$1', params: [5] });
+			return { command: 'UPDATE', row_count: 3, rows: [] };
+		},
+	});
+	const [[out]] = await run(ctx);
+	assert.deepEqual(out.json, { command: 'UPDATE', row_count: 3 });
+});
+
+test('domain buy asks for a checkout link, never the internal purchase route', async () => {
+	const ctx = makeContext({
+		params: { resource: 'domain', operation: 'buy', domain: 'Cafe-Lumiere.ch', years: 2, connectAppId: '44' },
+		http: (req) => {
+			assert.ok(req.url.endsWith('/domains/checkout'));
+			assert.ok(!req.url.includes('/purchase'));
+			assert.deepEqual(req.body, { domain: 'cafe-lumiere.ch', years: 2, app_id: 44 });
+			return { checkout_url: 'https://checkout.stripe.com/c/pay/x', domain: 'cafe-lumiere.ch', price: 16.99 };
+		},
+	});
+	const [[out]] = await run(ctx);
+	assert.match(out.json.checkout_url, /^https:\/\/checkout\.stripe\.com/);
+});
+
+test('trigger: new database row detects rows above the cursor, oldest first, once', async () => {
+	let rows = [{ id: 2, created_at: '2026-09-25T10:00:00Z' }, { id: 1, created_at: '2026-09-25T09:00:00Z' }];
+	const staticData = {};
+	const params = { event: 'databaseRow', appId: app(10), table: 'leads', cursorColumn: 'created_at' };
+	const http = (req) => {
+		assert.equal(req.qs.order_by, 'created_at');
+		assert.equal(req.qs.order, 'desc');
+		return { rows };
+	};
+	const ctx = () => makeContext({ params, http, staticData });
+	assert.equal(await poll(ctx()), null);
+	rows = [{ id: 4, created_at: '2026-09-25T11:00:00Z' }, { id: 3, created_at: '2026-09-25T10:00:00Z' }, ...rows];
+	const [out] = await poll(ctx());
+	assert.deepEqual(out.map((o) => o.json.id), [3, 4]);
+	assert.equal(await poll(ctx()), null);
+});
+
+test('trigger: new app', async () => {
+	let apps = [{ id: 5, created_at: '2026-09-25T10:00:00Z' }];
+	const staticData = {};
+	const ctx = () => makeContext({ params: { event: 'app' }, http: () => ({ apps }), staticData });
+	assert.equal(await poll(ctx()), null);
+	apps = [{ id: 6, created_at: '2026-09-25T12:00:00Z' }, ...apps];
+	const [out] = await poll(ctx());
+	assert.deepEqual(out.map((o) => o.json.id), [6]);
+});

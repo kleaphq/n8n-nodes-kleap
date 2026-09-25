@@ -1,6 +1,7 @@
 import type {
 	IDataObject,
 	IExecuteFunctions,
+	INodePropertyOptions,
 	IHttpRequestMethods,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
@@ -286,4 +287,33 @@ export function simplifySubmission(submission: IDataObject, appId: string): IDat
 		submitted_at: submission.submitted_at,
 		app_id: Number(appId),
 	};
+}
+
+export async function getTables(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const locator = this.getCurrentNodeParameter('appId') as { value?: string | number } | undefined;
+	const appId = String(locator?.value ?? '').trim();
+	if (!/^\d+$/.test(appId)) return [];
+	const schema = await kleapApiRequest.call(this, 'GET', `/apps/${appId}/database`);
+	return ((schema.tables as IDataObject[]) ?? []).map((t) => ({
+		name: t.name as string,
+		value: t.name as string,
+		description: t.row_count != null ? `${t.row_count as number} rows` : undefined,
+	}));
+}
+
+/** Reads a `json` parameter that n8n may hand back as a string or as an already-parsed value. */
+export function parseJsonParameter(
+	this: IExecuteFunctions,
+	name: string,
+	itemIndex: number,
+	fallback: unknown,
+): unknown {
+	const raw = this.getNodeParameter(name, itemIndex, fallback) as unknown;
+	if (typeof raw !== 'string') return raw ?? fallback;
+	if (!raw.trim()) return fallback;
+	try {
+		return JSON.parse(raw);
+	} catch {
+		throw new NodeOperationError(this.getNode(), `"${name}" is not valid JSON`, { itemIndex });
+	}
 }

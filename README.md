@@ -5,7 +5,7 @@ Build, edit and publish real websites with AI from any n8n workflow, and start w
 [Kleap](https://kleap.co) turns a text prompt into a hosted website (Astro, SSL, forms, analytics, custom domains). This package adds two nodes to n8n:
 
 - **Kleap**: create a site from a prompt, ask the AI to change it, publish it, read and write its files, and read its form submissions and analytics.
-- **Kleap Trigger**: starts a workflow on every new form submission of a site (contact, booking, signup…).
+- **Kleap Trigger**: starts a workflow on every new form submission of a site (contact, booking, signup…), every new row in a table of the site’s database, or every new app.
 
 ## Installation
 
@@ -16,7 +16,7 @@ See the [n8n community nodes guide](https://docs.n8n.io/integrations/community-n
 ## Credentials
 
 1. Sign in to [kleap.co](https://kleap.co) and open **Settings → API key**.
-2. Create a key. The **full** preset covers every operation of this node.
+2. Create a key with the **Full** preset. It covers every operation of this node, including database access and domain checkout. A key created before September 2026 may lack the `database:*` and `domains:checkout` scopes; the node then fails with `INSUFFICIENT_SCOPE`. Create a new key to fix this.
 3. In n8n, create a **Kleap API** credential and paste the key (`kleap_live_sk_…`).
 
 The credential test calls `GET /account/credits`.
@@ -25,13 +25,14 @@ The credential test calls `GET /account/credits`.
 
 | Resource | Operations |
 | --- | --- |
-| App | Create (from a prompt) · Edit With AI · Publish · Get · Get Many · Get Messages · Get Publish Status · Get Screenshot · Generate Image · Rename · Resolve (URL/domain → app) |
+| App | Create (from a prompt) · Edit With AI · Publish · Get · Get Many · Get Messages · Get Publish Status · Get Screenshot · Generate Image · Rename · Resolve (URL/domain → app) · Wake · Get / Connect Search Console |
 | Task | Get · Retry |
 | File | Get Many · Read · Write (text or binary) · Edit (find/replace) · Delete |
 | Form Submission | Get Many |
 | Analytics | Get (7/30/90 days) |
 | Account | Get Credits |
-| Domain | Search · Check · Connect |
+| Database | Get Schema · Get Many Rows · Insert Row · Update Rows · Delete Rows · Run SQL |
+| Domain | Search · Buy (returns a checkout link the owner pays) · Check · Connect |
 
 An app can be picked from a searchable list, by ID, or by its URL or custom domain.
 

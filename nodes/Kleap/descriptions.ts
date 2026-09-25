@@ -118,6 +118,12 @@ export const appOperations: INodeProperties = {
 	displayOptions: { show: { resource: ['app'] } },
 	options: [
 		{
+			name: 'Connect Search Console',
+			value: 'connectSearchConsole',
+			action: 'Connect google search console to an app',
+			description: 'Start connecting Google Search Console; returns the link the owner must open',
+		},
+		{
 			name: 'Create',
 			value: 'create',
 			action: 'Create a website from a prompt',
@@ -162,6 +168,12 @@ export const appOperations: INodeProperties = {
 			action: 'Get a screenshot of an app',
 		},
 		{
+			name: 'Get Search Console',
+			value: 'getSearchConsole',
+			action: 'Get google search performance of an app',
+			description: 'Clicks, impressions and top queries from Google Search Console',
+		},
+		{
 			name: 'Publish',
 			value: 'publish',
 			action: 'Publish an app',
@@ -178,6 +190,12 @@ export const appOperations: INodeProperties = {
 			value: 'resolve',
 			action: 'Find an app by URL or domain',
 			description: 'Find which app serves a URL, custom domain or slug',
+		},
+		{
+			name: 'Wake',
+			value: 'wake',
+			action: 'Wake an app',
+			description: 'Restart the live preview of an app that went to sleep',
 		},
 	],
 	default: 'create',
@@ -222,6 +240,9 @@ export const appFields: INodeProperties[] = [
 			'publish',
 			'rename',
 			'sendMessage',
+			'connectSearchConsole',
+			'getSearchConsole',
+			'wake',
 		],
 	),
 
@@ -686,6 +707,13 @@ export const domainOperations: INodeProperties = {
 	displayOptions: { show: { resource: ['domain'] } },
 	options: [
 		{
+			name: 'Buy',
+			value: 'buy',
+			action: 'Buy a domain',
+			description:
+				'Get a secure checkout link for a domain. The domain is only bought once its owner pays on that link.',
+		},
+		{
 			name: 'Check',
 			value: 'check',
 			action: 'Check a connected domain',
@@ -716,7 +744,24 @@ export const domainFields: INodeProperties[] = [
 		default: '',
 		required: true,
 		placeholder: 'e.g. cafe-lumiere.ch',
-		displayOptions: { show: { resource: ['domain'], operation: ['check', 'connect'] } },
+		displayOptions: { show: { resource: ['domain'], operation: ['buy', 'check', 'connect'] } },
+	},
+	{
+		displayName: 'Years',
+		name: 'years',
+		type: 'number',
+		typeOptions: { minValue: 1 },
+		default: 1,
+		displayOptions: { show: { resource: ['domain'], operation: ['buy'] } },
+	},
+	{
+		displayName: 'Connect to App ID',
+		name: 'connectAppId',
+		type: 'string',
+		default: '',
+		placeholder: 'e.g. 39541',
+		description: 'Optional. Once paid, the domain is also connected to this app.',
+		displayOptions: { show: { resource: ['domain'], operation: ['buy'] } },
 	},
 	{
 		displayName: 'Name or Keyword',
@@ -736,5 +781,173 @@ export const domainFields: INodeProperties[] = [
 		placeholder: 'e.g. .com, .ch, .io',
 		description: 'Comma-separated list. Empty = .ch, .com, .io, .co, .net.',
 		displayOptions: { show: { resource: ['domain'], operation: ['search'] } },
+	},
+];
+
+/* -------------------------------------------------------------------------- */
+/*                                  Database                                  */
+/* -------------------------------------------------------------------------- */
+
+export const databaseOperations: INodeProperties = {
+	displayName: 'Operation',
+	name: 'operation',
+	type: 'options',
+	noDataExpression: true,
+	displayOptions: { show: { resource: ['database'] } },
+	options: [
+		{
+			name: 'Delete Rows',
+			value: 'deleteRows',
+			action: 'Delete rows',
+			description: 'Delete the rows matching every condition',
+		},
+		{
+			name: 'Get Many Rows',
+			value: 'getRows',
+			action: 'Get many rows',
+			description: 'Read rows of a table, optionally filtered',
+		},
+		{
+			name: 'Get Schema',
+			value: 'getSchema',
+			action: 'Get the database schema',
+			description: 'List the tables and columns of the app’s database',
+		},
+		{
+			name: 'Insert Row',
+			value: 'insertRows',
+			action: 'Insert a row',
+			description: 'Insert one row per input item',
+		},
+		{
+			name: 'Run SQL',
+			value: 'runSql',
+			action: 'Run an SQL query',
+			description: 'Run any SQL statement on the app’s Postgres database',
+		},
+		{
+			name: 'Update Rows',
+			value: 'updateRows',
+			action: 'Update rows',
+			description: 'Update the rows matching every condition',
+		},
+	],
+	default: 'getRows',
+};
+
+const dbOps = (ops: string[]) => ({ show: { resource: ['database'], operation: ops } });
+
+export const databaseFields: INodeProperties[] = [
+	appLocator(['database']),
+	{
+		displayName: 'Table Name or ID',
+		name: 'table',
+		type: 'options',
+		typeOptions: { loadOptionsMethod: 'getTables', loadOptionsDependsOn: ['appId.value'] },
+		default: '',
+		required: true,
+		description:
+			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+		displayOptions: dbOps(['getRows', 'insertRows', 'updateRows', 'deleteRows']),
+	},
+	{
+		displayName: 'Row',
+		name: 'row',
+		type: 'json',
+		default: '={{ $json }}',
+		required: true,
+		description: 'The row to insert, as a JSON object of column: value',
+		displayOptions: dbOps(['insertRows']),
+	},
+	{
+		displayName: 'Where',
+		name: 'where',
+		type: 'json',
+		default: '{}',
+		description:
+			'Conditions as a JSON object of column: value; every condition must match. Empty returns every row.',
+		displayOptions: dbOps(['getRows']),
+	},
+	{
+		displayName: 'Where',
+		name: 'where',
+		type: 'json',
+		default: '{\n  "id": 1\n}',
+		required: true,
+		description: 'Conditions as a JSON object of column: value; every condition must match. Required, to avoid changing the whole table.',
+		displayOptions: dbOps(['updateRows', 'deleteRows']),
+	},
+	{
+		displayName: 'Set',
+		name: 'set',
+		type: 'json',
+		default: '{}',
+		required: true,
+		description: 'New values, as a JSON object of column: value',
+		displayOptions: dbOps(['updateRows']),
+	},
+	{
+		displayName: 'Return All',
+		name: 'returnAll',
+		type: 'boolean',
+		default: false,
+		description: 'Whether to return all results or only up to a given limit',
+		displayOptions: dbOps(['getRows']),
+	},
+	{
+		displayName: 'Limit',
+		name: 'limit',
+		type: 'number',
+		typeOptions: { minValue: 1 },
+		default: 50,
+		description: 'Max number of results to return',
+		displayOptions: { show: { resource: ['database'], operation: ['getRows'], returnAll: [false] } },
+	},
+	{
+		displayName: 'Options',
+		name: 'rowOptions',
+		type: 'collection',
+		placeholder: 'Add Option',
+		default: {},
+		displayOptions: dbOps(['getRows']),
+		options: [
+			{
+				displayName: 'Order By Column',
+				name: 'orderBy',
+				type: 'string',
+				default: '',
+				placeholder: 'e.g. created_at',
+			},
+			{
+				displayName: 'Order',
+				name: 'order',
+				type: 'options',
+				options: [
+					{ name: 'Ascending', value: 'asc' },
+					{ name: 'Descending', value: 'desc' },
+				],
+				default: 'desc',
+			},
+		],
+	},
+	{
+		displayName: 'SQL',
+		name: 'sql',
+		type: 'string',
+		typeOptions: { rows: 6, editor: 'sqlEditor', sqlDialect: 'PostgreSQL' },
+		default: '',
+		required: true,
+		placeholder: 'e.g. SELECT * FROM leads WHERE status = $1',
+		description:
+			'Use $1, $2… for values and pass them in Parameters. New tables must enable row-level security, or the query is refused.',
+		displayOptions: dbOps(['runSql']),
+	},
+	{
+		displayName: 'Parameters',
+		name: 'params',
+		type: 'json',
+		default: '[]',
+		description: 'Values for $1, $2…, as a JSON array',
+		displayOptions: dbOps(['runSql']),
 	},
 ];
