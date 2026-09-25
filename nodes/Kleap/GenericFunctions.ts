@@ -404,6 +404,9 @@ export async function getMappingColumns(this: ILoadOptionsFunctions): Promise<Re
 		return { fields: [], emptyFieldsNotice: 'Pick the app and the table first' };
 	}
 	const columns = await fetchColumns.call(this, appId, table);
+	if (!columns.length) {
+		return { fields: [], emptyFieldsNotice: 'This table has no columns yet' };
+	}
 	return {
 		fields: columns.map((c) => ({
 			id: c.name,
@@ -415,7 +418,6 @@ export async function getMappingColumns(this: ILoadOptionsFunctions): Promise<Re
 			display: true,
 			type: fieldType(c.type),
 		})),
-		emptyFieldsNotice: 'This table has no columns',
 	};
 }
 
