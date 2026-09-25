@@ -259,7 +259,7 @@ export const appFields: INodeProperties[] = [
 		displayOptions: { show: { resource: ['app'], operation: ['sendMessage'] } },
 	},
 
-	...waitFields('app', ['create', 'sendMessage'], 20),
+	...waitFields('app', ['create', 'sendMessage'], 30),
 	taskOptions('app', ['create', 'sendMessage']),
 
 	// generateImage

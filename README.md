@@ -38,7 +38,7 @@ An app can be picked from a searchable list, by ID, or by its URL or custom doma
 
 ### Waiting for the AI
 
-**Create** and **Edit With AI** start an AI task that takes about 1 to 5 minutes. With **Wait for Completion** on (the default), the node waits for the task to finish and returns the result. The result includes the files changed, the credits charged and the preview URL.
+**Create** and **Edit With AI** start an AI task that usually takes 2 to 10 minutes (up to about 20 for big sites). With **Wait for Completion** on (the default), the node waits for the task to finish and returns the result. The result includes the files changed, the credits charged and the preview URL.
 
 Turn on **Publish When Done** to also deploy the site. The node waits until the site is live and returns its `production_url` and the post-deploy quality report. The report covers broken links, SEO checks and the design gate.
 
