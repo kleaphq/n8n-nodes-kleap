@@ -1,0 +1,58 @@
+{
+  "name": "n8n-nodes-kleap",
+  "version": "0.1.0",
+  "description": "n8n nodes for Kleap: build, edit and publish websites with AI from any workflow, and trigger on their form submissions.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "kleap",
+    "website builder",
+    "ai",
+    "astro"
+  ],
+  "license": "MIT",
+  "homepage": "https://kleap.co",
+  "author": {
+    "name": "Kleap",
+    "email": "hello@kleap.co"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kleaphq/n8n-nodes-kleap.git"
+  },
+  "main": "index.js",
+  "scripts": {
+    "build": "rimraf dist && tsc && node scripts/copy-icons.mjs",
+    "dev": "tsc --watch",
+    "lint": "eslint nodes credentials",
+    "test": "node --test test/*.test.mjs",
+    "prepublishOnly": "npm run build && npm run lint && npm test"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "strict": true,
+    "credentials": [
+      "dist/credentials/KleapApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/Kleap/Kleap.node.js",
+      "dist/nodes/KleapTrigger/KleapTrigger.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@n8n/eslint-plugin-community-nodes": "0.33.0",
+    "@types/node": "^22.0.0",
+    "eslint": "9.29.0",
+    "eslint-plugin-n8n-nodes-base": "^1.16.7",
+    "n8n-workflow": "2.16.0",
+    "rimraf": "^6.0.1",
+    "typescript": "~5.8.3",
+    "typescript-eslint": "8.70.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}
