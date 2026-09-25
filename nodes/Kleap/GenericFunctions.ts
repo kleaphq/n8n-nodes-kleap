@@ -396,6 +396,10 @@ function fieldType(pgType: string): ResourceMapperField['type'] {
 	return 'string';
 }
 
+function isAutoFilled(c: DbColumn): boolean {
+	return !!c.default && /nextval\(|now\(\)|current_timestamp|gen_random_uuid|uuid_generate/i.test(c.default);
+}
+
 /** Columns for the "Columns" mapper: one field per column, filled by hand or mapped automatically. */
 export async function getMappingColumns(this: ILoadOptionsFunctions): Promise<ResourceMapperFields> {
 	const appId = await currentAppId.call(this);
@@ -415,7 +419,8 @@ export async function getMappingColumns(this: ILoadOptionsFunctions): Promise<Re
 			required: !c.nullable && c.default === null,
 			defaultMatch: c.primary_key,
 			canBeUsedToMatch: true,
-			display: true,
+			// Hide what the database fills itself (auto ids, timestamps); it can still be added back.
+			display: !isAutoFilled(c),
 			type: fieldType(c.type),
 		})),
 	};
