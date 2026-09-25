@@ -32,6 +32,7 @@ export function makeContext({ params, http, credentials, staticData = {}, mode =
 
 	const ctx = {
 		requests,
+		getCurrentNodeParameter: (name) => paramsPerItem[0][name],
 		staticData,
 		getNode: () => NODE,
 		getMode: () => mode,

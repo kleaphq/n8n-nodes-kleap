@@ -125,3 +125,38 @@ if (phase === 'build') {
 	console.log('  ', pick(shot ?? {}, ['image_url', 'cached']));
 	console.log(`APP_ID=${created.app_id}`);
 }
+
+if (phase === 'db') {
+	// Needs an app with a Kleap Database and a table n8n_e2e_leads(id, email, status, created_at).
+	const appId = { mode: 'id', value: process.env.KLEAP_DB_APP_ID ?? '104139' };
+	const email = `n8n-e2e-${Date.now()}@example.com`;
+	const schema = await step('Database → Get Schema', { resource: 'database', operation: 'getSchema', appId });
+	console.log('   tables:', schema?.map((t) => t.name).join(', '));
+	const [ins] = await step('Database → Insert Row', { resource: 'database', operation: 'insertRows', appId, table: 'n8n_e2e_leads', row: JSON.stringify({ email }) });
+	console.log('  ', ins);
+	const rows = await step('Database → Get Many Rows (where)', { resource: 'database', operation: 'getRows', appId, table: 'n8n_e2e_leads', where: JSON.stringify({ email }), returnAll: false, limit: 10, rowOptions: { orderBy: 'created_at', order: 'desc' } });
+	console.log('   found:', rows?.length);
+	const [upd] = await step('Database → Update Rows', { resource: 'database', operation: 'updateRows', appId, table: 'n8n_e2e_leads', where: JSON.stringify({ email }), set: JSON.stringify({ status: 'won' }) });
+	console.log('   status after update:', upd?.status);
+	const [sql] = await step('Database → Run SQL', { resource: 'database', operation: 'runSql', appId, sql: 'SELECT count(*)::int AS n FROM n8n_e2e_leads WHERE email = $1', params: JSON.stringify([email]) });
+	console.log('  ', sql);
+	await step('Database → Delete Rows (empty where, expect refusal)', { resource: 'database', operation: 'deleteRows', appId, table: 'n8n_e2e_leads', where: '{}' });
+	const [del] = await step('Database → Delete Rows', { resource: 'database', operation: 'deleteRows', appId, table: 'n8n_e2e_leads', where: JSON.stringify({ email }) });
+	console.log('  ', del);
+
+	// Trigger: activation poll, insert, next poll must see exactly that row.
+	const staticData = {};
+	const trig = (mode) => new KleapTrigger().poll.call(makeContext({ params: { event: 'databaseRow', appId, table: 'n8n_e2e_leads', cursorColumn: 'created_at' }, http: realHttp, credentials, staticData, mode }));
+	console.log('   trigger activation →', await trig());
+	const email2 = `n8n-trigger-${Date.now()}@example.com`;
+	await step('Database → Insert Row (for trigger)', { resource: 'database', operation: 'insertRows', appId, table: 'n8n_e2e_leads', row: JSON.stringify({ email: email2 }) });
+	const fired = await trig();
+	console.log('   trigger poll → emitted:', fired?.[0]?.map((i) => i.json.email));
+	console.log('   trigger poll again →', await trig());
+	await step('Database → Delete Rows (cleanup)', { resource: 'database', operation: 'deleteRows', appId, table: 'n8n_e2e_leads', where: JSON.stringify({ email: email2 }) });
+
+	const [buy] = await step('Domain → Buy (checkout link only)', { resource: 'domain', operation: 'buy', domain: 'n8n-e2e-check.com', years: 1, connectAppId: '' });
+	console.log('   checkout_url host:', buy?.checkout_url ? new URL(buy.checkout_url).host : null, 'price:', buy?.price);
+	const [img] = await step('App → Generate Image', { resource: 'app', operation: 'generateImage', appId: { mode: 'id', value: '105810' }, imagePrompt: 'a ceramic vase on a shelf', imagePath: 'public/images/n8n-e2e.webp', imageOptions: { width: 512, height: 512 } });
+	console.log('  ', img && { path: img.path, bytes: img.bytes });
+}
