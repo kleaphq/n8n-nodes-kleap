@@ -205,66 +205,119 @@ test('trigger: manual test returns the latest submission', async () => {
 	assert.equal(out[0].json.app_id, 8);
 });
 
-test('database: getRows sends where as JSON and pages with has_more', async () => {
+const SCHEMA = {
+	provisioned: true,
+	tables: [
+		{
+			name: 'leads',
+			row_count: 3,
+			columns: [
+				{ name: 'id', type: 'bigint', nullable: false, default: "nextval('leads_id_seq')", primary_key: true },
+				{ name: 'email', type: 'text', nullable: true, default: null, primary_key: false },
+				{ name: 'status', type: 'text', nullable: true, default: "'new'", primary_key: false },
+				{ name: 'score', type: 'integer', nullable: true, default: null, primary_key: false },
+			],
+		},
+	],
+};
+const withSchema = (handler) => (req) =>
+	req.method === 'GET' && req.url.endsWith('/apps/10/database') ? SCHEMA : handler(req);
+
+test('database: Find Rows turns dropdown conditions into where (typed) and pages with has_more', async () => {
 	const seen = [];
 	const ctx = makeContext({
 		params: {
-			resource: 'database', operation: 'getRows', appId: app(10), table: 'leads', where: '{"status":"new"}',
-			returnAll: true, rowOptions: { orderBy: 'created_at', order: 'desc' },
+			resource: 'database', operation: 'getRows', appId: app(10), table: 'leads',
+			conditions: { condition: [{ column: 'status', value: 'new' }, { column: 'score', value: '12' }] },
+			returnAll: true, rowOptions: { orderBy: 'id', order: 'desc' },
 		},
-		http: (req) => {
+		http: withSchema((req) => {
 			seen.push(req);
 			assert.ok(req.url.endsWith('/apps/10/database/tables/leads/rows'));
-			assert.equal(req.qs.where, '{"status":"new"}');
-			assert.equal(req.qs.order_by, 'created_at');
-			return req.qs.offset === 0
-				? { rows: [{ id: 1 }, { id: 2 }], has_more: true }
-				: { rows: [{ id: 3 }], has_more: false };
-		},
+			assert.deepEqual(JSON.parse(req.qs.where), { status: 'new', score: 12 }, '"12" becomes a number for an integer column');
+			assert.equal(req.qs.order_by, 'id');
+			return req.qs.offset === 0 ? { rows: [{ id: 1 }, { id: 2 }], has_more: true } : { rows: [{ id: 3 }], has_more: false };
+		}),
 	});
 	const [out] = await run(ctx);
 	assert.deepEqual(out.map((o) => o.json.id), [1, 2, 3]);
 	assert.equal(seen[1].qs.offset, 2);
 });
 
-test('database: insert sends one row per item, update/delete refuse an empty where', async () => {
-	const insert = makeContext({
-		params: { resource: 'database', operation: 'insertRows', appId: app(10), table: 'leads', row: { email: 'a@b.c' } },
-		http: (req) => {
+test('database: Add Row — fields typed in one by one, empty ones left to the database default', async () => {
+	const ctx = makeContext({
+		params: {
+			resource: 'database', operation: 'insertRows', appId: app(10), table: 'leads',
+			columns: { mappingMode: 'defineBelow', value: { id: null, email: 'a@b.c', status: '', score: '7' } },
+		},
+		http: withSchema((req) => {
 			assert.equal(req.method, 'POST');
-			assert.deepEqual(req.body, { rows: [{ email: 'a@b.c' }] });
-			return { table: 'leads', inserted: 1, rows: [{ id: 9, email: 'a@b.c' }] };
-		},
+			assert.deepEqual(req.body, { rows: [{ email: 'a@b.c', score: 7 }] });
+			return { inserted: 1, rows: [{ id: 9, email: 'a@b.c', status: 'new', score: 7 }] };
+		}),
 	});
-	const [[row]] = await run(insert);
+	const [[row]] = await run(ctx);
 	assert.equal(row.json.id, 9);
-
-	for (const operation of ['updateRows', 'deleteRows']) {
-		const ctx = makeContext({
-			params: { resource: 'database', operation, appId: app(10), table: 'leads', where: '{}', set: '{"a":1}' },
-			http: () => assert.fail('must not call the API with an empty where'),
-		});
-		await assert.rejects(run(ctx), /at least one condition/);
-	}
-
-	const update = makeContext({
-		params: { resource: 'database', operation: 'updateRows', appId: app(10), table: 'leads', where: '{"id":9}', set: '{"status":"done"}' },
-		http: (req) => {
-			assert.equal(req.method, 'PATCH');
-			assert.deepEqual(req.body, { where: { id: 9 }, set: { status: 'done' } });
-			return { updated: 1, rows: [{ id: 9, status: 'done' }] };
-		},
-	});
-	const [[u]] = await run(update);
-	assert.equal(u.json.status, 'done');
 });
 
-test('database: runSql passes params and returns rows or the command summary', async () => {
+test('database: Add Row — "map automatically" takes the lead fields that are real columns', async () => {
 	const ctx = makeContext({
-		params: { resource: 'database', operation: 'runSql', appId: app(10), sql: 'UPDATE t SET a=$1', params: '[5]' },
+		params: { resource: 'database', operation: 'insertRows', appId: app(10), table: 'leads', columns: { mappingMode: 'autoMapInputData', value: null } },
+		items: [{ json: { email: 'lead@x.co', name: 'Not a column', message: 'hi', submission_id: 5 } }],
+		http: withSchema((req) => {
+			assert.deepEqual(req.body, { rows: [{ email: 'lead@x.co' }] });
+			return { inserted: 1, rows: [{ id: 10, email: 'lead@x.co' }] };
+		}),
+	});
+	const [[row]] = await run(ctx);
+	assert.equal(row.json.id, 10);
+});
+
+test('database: Update Rows uses the picked column to find rows, the rest as new values', async () => {
+	const ctx = makeContext({
+		params: {
+			resource: 'database', operation: 'updateRows', appId: app(10), table: 'leads',
+			columns: { mappingMode: 'defineBelow', matchingColumns: ['email'], value: { email: 'a@b.c', status: 'won' } },
+		},
+		http: withSchema((req) => {
+			assert.equal(req.method, 'PATCH');
+			assert.deepEqual(req.body, { where: { email: 'a@b.c' }, set: { status: 'won' } });
+			return { updated: 1, rows: [{ id: 1, email: 'a@b.c', status: 'won' }] };
+		}),
+	});
+	const [[u]] = await run(ctx);
+	assert.equal(u.json.status, 'won');
+
+	const noMatch = makeContext({
+		params: { resource: 'database', operation: 'updateRows', appId: app(10), table: 'leads', columns: { mappingMode: 'defineBelow', matchingColumns: [], value: { status: 'won' } } },
+		http: withSchema(() => assert.fail('must not update without a matching column')),
+	});
+	await assert.rejects(run(noMatch), /Pick the column used to find the rows/);
+});
+
+test('database: Delete Rows refuses to run without a condition', async () => {
+	const ctx = makeContext({
+		params: { resource: 'database', operation: 'deleteRows', appId: app(10), table: 'leads', conditions: {} },
+		http: withSchema(() => assert.fail('must not call delete with no condition')),
+	});
+	await assert.rejects(run(ctx), /at least one condition/);
+	const ok = makeContext({
+		params: { resource: 'database', operation: 'deleteRows', appId: app(10), table: 'leads', conditions: { condition: [{ column: 'id', value: '9' }] } },
+		http: withSchema((req) => {
+			assert.deepEqual(req.body, { where: { id: 9 } });
+			return { deleted: 1 };
+		}),
+	});
+	const [[d]] = await run(ok);
+	assert.equal(d.json.deleted, 1);
+});
+
+test('database: Run SQL takes its $1, $2 values from a simple list', async () => {
+	const ctx = makeContext({
+		params: { resource: 'database', operation: 'runSql', appId: app(10), sql: 'UPDATE t SET a=$1', queryParams: { param: [{ value: '5' }] } },
 		http: (req) => {
 			assert.ok(req.url.endsWith('/apps/10/database/query'));
-			assert.deepEqual(req.body, { sql: 'UPDATE t SET a=$1', params: [5] });
+			assert.deepEqual(req.body, { sql: 'UPDATE t SET a=$1', params: ['5'] });
 			return { command: 'UPDATE', row_count: 3, rows: [] };
 		},
 	});

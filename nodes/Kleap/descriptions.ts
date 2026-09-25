@@ -796,46 +796,48 @@ export const databaseOperations: INodeProperties = {
 	displayOptions: { show: { resource: ['database'] } },
 	options: [
 		{
+			name: 'Add Row',
+			value: 'insertRows',
+			action: 'Add a row',
+			description: 'Add one row per input item. Each column of the table becomes a field.',
+		},
+		{
 			name: 'Delete Rows',
 			value: 'deleteRows',
 			action: 'Delete rows',
-			description: 'Delete the rows matching every condition',
+			description: 'Delete the rows that match your conditions',
 		},
 		{
-			name: 'Get Many Rows',
+			name: 'Find Rows',
 			value: 'getRows',
-			action: 'Get many rows',
-			description: 'Read rows of a table, optionally filtered',
+			action: 'Find rows',
+			description: 'Get the rows of a table, optionally only those that match your conditions',
 		},
 		{
-			name: 'Get Schema',
+			name: 'List Tables',
 			value: 'getSchema',
-			action: 'Get the database schema',
-			description: 'List the tables and columns of the app’s database',
+			action: 'List the tables',
+			description: 'See the tables of the site’s database and their columns',
 		},
 		{
-			name: 'Insert Row',
-			value: 'insertRows',
-			action: 'Insert a row',
-			description: 'Insert one row per input item',
-		},
-		{
-			name: 'Run SQL',
+			name: 'Run SQL (Advanced)',
 			value: 'runSql',
 			action: 'Run an SQL query',
-			description: 'Run any SQL statement on the app’s Postgres database',
+			description: 'For developers: run any SQL statement on the site’s Postgres database',
 		},
 		{
 			name: 'Update Rows',
 			value: 'updateRows',
 			action: 'Update rows',
-			description: 'Update the rows matching every condition',
+			description: 'Change the rows that match the column you pick',
 		},
 	],
-	default: 'getRows',
+	default: 'insertRows',
 };
 
 const dbOps = (ops: string[]) => ({ show: { resource: ['database'], operation: ops } });
+
+const tableDependsOn = ['appId.value', 'table'];
 
 export const databaseFields: INodeProperties[] = [
 	appLocator(['database']),
@@ -850,41 +852,121 @@ export const databaseFields: INodeProperties[] = [
 			'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 		displayOptions: dbOps(['getRows', 'insertRows', 'updateRows', 'deleteRows']),
 	},
+
+	// Add Row / Update Rows: one field per column, like the Postgres and Google Sheets nodes.
 	{
-		displayName: 'Row',
-		name: 'row',
-		type: 'json',
-		default: '={{ $json }}',
+		displayName: 'Columns',
+		name: 'columns',
+		type: 'resourceMapper',
+		noDataExpression: true,
+		default: { mappingMode: 'defineBelow', value: null },
 		required: true,
-		description: 'The row to insert, as a JSON object of column: value',
+		typeOptions: {
+			loadOptionsDependsOn: tableDependsOn,
+			resourceMapper: {
+				resourceMapperMethod: 'getMappingColumns',
+				mode: 'add',
+				fieldWords: { singular: 'column', plural: 'columns' },
+				addAllFields: true,
+				multiKeyMatch: false,
+				supportAutoMap: true,
+			},
+		},
 		displayOptions: dbOps(['insertRows']),
 	},
 	{
-		displayName: 'Where',
-		name: 'where',
-		type: 'json',
-		default: '{}',
-		description:
-			'Conditions as a JSON object of column: value; every condition must match. Empty returns every row.',
-		displayOptions: dbOps(['getRows']),
-	},
-	{
-		displayName: 'Where',
-		name: 'where',
-		type: 'json',
-		default: '{\n  "id": 1\n}',
+		displayName: 'Columns',
+		name: 'columns',
+		type: 'resourceMapper',
+		noDataExpression: true,
+		default: { mappingMode: 'defineBelow', value: null },
 		required: true,
-		description: 'Conditions as a JSON object of column: value; every condition must match. Required, to avoid changing the whole table.',
-		displayOptions: dbOps(['updateRows', 'deleteRows']),
-	},
-	{
-		displayName: 'Set',
-		name: 'set',
-		type: 'json',
-		default: '{}',
-		required: true,
-		description: 'New values, as a JSON object of column: value',
+		typeOptions: {
+			loadOptionsDependsOn: tableDependsOn,
+			resourceMapper: {
+				resourceMapperMethod: 'getMappingColumns',
+				mode: 'update',
+				fieldWords: { singular: 'column', plural: 'columns' },
+				addAllFields: true,
+				multiKeyMatch: true,
+				supportAutoMap: true,
+				matchingFieldsLabels: {
+					title: 'Find the Rows Where',
+					description: 'The rows whose value in this column matches are updated',
+					hint: 'Usually the email or the ID',
+				},
+			},
+		},
 		displayOptions: dbOps(['updateRows']),
+	},
+
+	// Find Rows / Delete Rows: "column = value" conditions picked from dropdowns.
+	{
+		displayName: 'Only Rows Where',
+		name: 'conditions',
+		type: 'fixedCollection',
+		typeOptions: { multipleValues: true },
+		placeholder: 'Add Condition',
+		default: {},
+		description: 'Every condition must match. Leave empty to get every row.',
+		displayOptions: dbOps(['getRows']),
+		options: [
+			{
+				displayName: 'Condition',
+				name: 'condition',
+				values: [
+					{
+						displayName: 'Column Name or ID',
+						name: 'column',
+						type: 'options',
+						typeOptions: { loadOptionsMethod: 'getColumns', loadOptionsDependsOn: tableDependsOn },
+						default: '',
+						description:
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+					},
+					{
+						displayName: 'Is Equal To',
+						name: 'value',
+						type: 'string',
+						default: '',
+					},
+				],
+			},
+		],
+	},
+	{
+		displayName: 'Delete Rows Where',
+		name: 'conditions',
+		type: 'fixedCollection',
+		typeOptions: { multipleValues: true },
+		placeholder: 'Add Condition',
+		default: {},
+		required: true,
+		description: 'Every condition must match. At least one is required, so a mistake can never empty the table.',
+		displayOptions: dbOps(['deleteRows']),
+		options: [
+			{
+				displayName: 'Condition',
+				name: 'condition',
+				values: [
+					{
+						displayName: 'Column Name or ID',
+						name: 'column',
+						type: 'options',
+						typeOptions: { loadOptionsMethod: 'getColumns', loadOptionsDependsOn: tableDependsOn },
+						default: '',
+						description:
+							'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
+					},
+					{
+						displayName: 'Is Equal To',
+						name: 'value',
+						type: 'string',
+						default: '',
+					},
+				],
+			},
+		],
 	},
 	{
 		displayName: 'Return All',
@@ -912,24 +994,28 @@ export const databaseFields: INodeProperties[] = [
 		displayOptions: dbOps(['getRows']),
 		options: [
 			{
-				displayName: 'Order By Column',
+				displayName: 'Sort By Column Name or ID',
 				name: 'orderBy',
-				type: 'string',
+				type: 'options',
+				typeOptions: { loadOptionsMethod: 'getColumns', loadOptionsDependsOn: tableDependsOn },
 				default: '',
-				placeholder: 'e.g. created_at',
+				description:
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
 				displayName: 'Order',
 				name: 'order',
 				type: 'options',
 				options: [
-					{ name: 'Ascending', value: 'asc' },
-					{ name: 'Descending', value: 'desc' },
+					{ name: 'Newest / Largest First', value: 'desc' },
+					{ name: 'Oldest / Smallest First', value: 'asc' },
 				],
 				default: 'desc',
 			},
 		],
 	},
+
+	// Run SQL (advanced)
 	{
 		displayName: 'SQL',
 		name: 'sql',
@@ -939,15 +1025,23 @@ export const databaseFields: INodeProperties[] = [
 		required: true,
 		placeholder: 'e.g. SELECT * FROM leads WHERE status = $1',
 		description:
-			'Use $1, $2… for values and pass them in Parameters. New tables must enable row-level security, or the query is refused.',
+			'Use $1, $2… for values and fill them in below. New tables must enable row-level security, or the query is refused.',
 		displayOptions: dbOps(['runSql']),
 	},
 	{
-		displayName: 'Parameters',
-		name: 'params',
-		type: 'json',
-		default: '[]',
-		description: 'Values for $1, $2…, as a JSON array',
+		displayName: 'Values for $1, $2…',
+		name: 'queryParams',
+		type: 'fixedCollection',
+		typeOptions: { multipleValues: true, sortable: true },
+		placeholder: 'Add Value',
+		default: {},
 		displayOptions: dbOps(['runSql']),
+		options: [
+			{
+				displayName: 'Value',
+				name: 'param',
+				values: [{ displayName: 'Value', name: 'value', type: 'string', default: '' }],
+			},
+		],
 	},
 ];

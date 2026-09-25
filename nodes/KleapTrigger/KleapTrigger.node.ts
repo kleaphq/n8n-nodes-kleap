@@ -8,7 +8,7 @@ import type {
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 import { appLocator } from '../Kleap/descriptions';
-import { getTables, kleapApiRequest, searchApps, simplifySubmission } from '../Kleap/GenericFunctions';
+import { getColumns, getTables, kleapApiRequest, searchApps, simplifySubmission } from '../Kleap/GenericFunctions';
 
 // The shared locator is scoped to a resource; the trigger has none, so drop its displayOptions.
 const { displayOptions: _unused, ...appProperty } = appLocator(['app']);
@@ -75,13 +75,14 @@ export class KleapTrigger implements INodeType {
 				displayOptions: { show: { event: ['databaseRow'] } },
 			},
 			{
-				displayName: 'Order Column',
+				displayName: 'Detect New Rows With Column Name or ID',
 				name: 'cursorColumn',
-				type: 'string',
+				type: 'options',
+				typeOptions: { loadOptionsMethod: 'getColumns', loadOptionsDependsOn: ['appId.value', 'table'] },
 				default: 'created_at',
 				required: true,
 				description:
-					'A column that grows with each new row, such as created_at or a numeric ID. New rows are detected with it.',
+					'A column that grows with each new row, like created_at or ID. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 				displayOptions: { show: { event: ['databaseRow'] } },
 			},
 			{
@@ -98,7 +99,7 @@ export class KleapTrigger implements INodeType {
 
 	methods = {
 		listSearch: { searchApps },
-		loadOptions: { getTables },
+		loadOptions: { getTables, getColumns },
 	};
 
 	async poll(this: IPollFunctions): Promise<INodeExecutionData[][] | null> {

@@ -25,9 +25,13 @@ import {
 	taskOperations,
 } from './descriptions';
 import {
+	coerceForColumn,
+	conditionsToWhere,
+	fetchColumns,
+	getColumns,
+	getMappingColumns,
 	getTables,
 	kleapApiRequest,
-	parseJsonParameter,
 	publishAndWait,
 	resolveAppId,
 	searchApps,
@@ -88,7 +92,8 @@ export class Kleap implements INodeType {
 
 	methods = {
 		listSearch: { searchApps },
-		loadOptions: { getTables },
+		loadOptions: { getTables, getColumns },
+		resourceMapping: { getMappingColumns },
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
@@ -326,17 +331,32 @@ async function runOperation(
 	if (resource === 'database') {
 		const appId = await resolveAppId.call(this, i);
 		const base = `/apps/${appId}/database`;
-		const table = () =>
-			`${base}/tables/${encodeURIComponent(this.getNodeParameter('table', i) as string)}/rows`;
+		if (operation === 'getSchema') {
+			const schema = await kleapApiRequest.call(this, 'GET', base);
+			return (schema.tables as IDataObject[]) ?? [];
+		}
+		if (operation === 'runSql') {
+			const params = (
+				(this.getNodeParameter('queryParams', i, {}) as { param?: Array<{ value: unknown }> }).param ?? []
+			).map((p) => p.value);
+			const response = await kleapApiRequest.call(this, 'POST', `${base}/query`, {
+				sql: this.getNodeParameter('sql', i) as string,
+				params,
+			});
+			const rows = (response.rows as IDataObject[]) ?? [];
+			return rows.length ? rows : { command: response.command, row_count: response.row_count };
+		}
+
+		const table = this.getNodeParameter('table', i) as string;
+		const rowsUrl = `${base}/tables/${encodeURIComponent(table)}/rows`;
+		const columns = await fetchColumns.call(this, appId, table);
+		const byName = new Map(columns.map((c) => [c.name, c]));
+
 		switch (operation) {
-			case 'getSchema': {
-				const schema = await kleapApiRequest.call(this, 'GET', base);
-				return (schema.tables as IDataObject[]) ?? [];
-			}
 			case 'getRows': {
 				const returnAll = this.getNodeParameter('returnAll', i) as boolean;
 				const limit = returnAll ? Infinity : (this.getNodeParameter('limit', i) as number);
-				const where = parseJsonParameter.call(this, 'where', i, {}) as IDataObject;
+				const where = conditionsToWhere(this.getNodeParameter('conditions', i, {}) as never, columns);
 				const rowOptions = this.getNodeParameter('rowOptions', i, {}) as IDataObject;
 				const rows: IDataObject[] = [];
 				let offset = 0;
@@ -345,7 +365,7 @@ async function runOperation(
 					if (Object.keys(where).length) qs.where = JSON.stringify(where);
 					if (rowOptions.orderBy) qs.order_by = rowOptions.orderBy;
 					if (rowOptions.order) qs.order = rowOptions.order;
-					const page = await kleapApiRequest.call(this, 'GET', table(), undefined, qs);
+					const page = await kleapApiRequest.call(this, 'GET', rowsUrl, undefined, qs);
 					const batch = (page.rows as IDataObject[]) ?? [];
 					rows.push(...batch);
 					if (!page.has_more || !batch.length) break;
@@ -353,37 +373,73 @@ async function runOperation(
 				}
 				return rows;
 			}
-			case 'insertRows': {
-				const row = parseJsonParameter.call(this, 'row', i, {}) as IDataObject;
-				const response = await kleapApiRequest.call(this, 'POST', table(), { rows: [row] });
-				const inserted = (response.rows as IDataObject[]) ?? [];
-				return inserted.length ? inserted : response;
-			}
-			case 'updateRows':
-			case 'deleteRows': {
-				const where = parseJsonParameter.call(this, 'where', i, {}) as IDataObject;
+			case 'insertRows':
+			case 'updateRows': {
+				const mapper = this.getNodeParameter('columns', i) as {
+					mappingMode?: string;
+					value?: IDataObject | null;
+					matchingColumns?: string[];
+				};
+				// "Map automatically": take the input item's fields that are real columns.
+				const source: IDataObject =
+					mapper.mappingMode === 'autoMapInputData'
+						? (this.getInputData()[i].json as IDataObject)
+						: (mapper.value ?? {});
+				const row: IDataObject = {};
+				for (const [key, value] of Object.entries(source)) {
+					if (!byName.has(key)) continue;
+					// Empty fields are left to the database default instead of being written as "".
+					if (value === null || value === undefined || value === '') continue;
+					row[key] = coerceForColumn(value, byName.get(key)) as IDataObject[string];
+				}
+
+				if (operation === 'insertRows') {
+					if (!Object.keys(row).length) {
+						throw new NodeOperationError(this.getNode(), 'Nothing to add: every column is empty', {
+							itemIndex: i,
+							description: 'Fill at least one column, or switch "Mapping Column Mode" to map the input automatically.',
+						});
+					}
+					const response = await kleapApiRequest.call(this, 'POST', rowsUrl, { rows: [row] });
+					const inserted = (response.rows as IDataObject[]) ?? [];
+					return inserted.length ? inserted : response;
+				}
+
+				const matching = mapper.matchingColumns ?? [];
+				const where: IDataObject = {};
+				for (const col of matching) {
+					if (row[col] === undefined) {
+						throw new NodeOperationError(this.getNode(), `Give a value for "${col}" to find the rows to update`, {
+							itemIndex: i,
+						});
+					}
+					where[col] = row[col];
+					delete row[col];
+				}
 				if (!Object.keys(where).length) {
-					throw new NodeOperationError(this.getNode(), 'Where must contain at least one condition', {
+					throw new NodeOperationError(this.getNode(), 'Pick the column used to find the rows to update', {
 						itemIndex: i,
-						description: 'This protects you from changing or deleting every row of the table by mistake.',
+						description: 'This protects you from changing every row of the table by mistake.',
 					});
 				}
-				if (operation === 'deleteRows') {
-					return kleapApiRequest.call(this, 'DELETE', table(), { where });
+				if (!Object.keys(row).length) {
+					throw new NodeOperationError(this.getNode(), 'Nothing to change: fill at least one other column', {
+						itemIndex: i,
+					});
 				}
-				const set = parseJsonParameter.call(this, 'set', i, {}) as IDataObject;
-				const response = await kleapApiRequest.call(this, 'PATCH', table(), { where, set });
+				const response = await kleapApiRequest.call(this, 'PATCH', rowsUrl, { where, set: row });
 				const updated = (response.rows as IDataObject[]) ?? [];
 				return updated.length ? updated : response;
 			}
-			case 'runSql': {
-				const params = parseJsonParameter.call(this, 'params', i, []) as unknown[];
-				const response = await kleapApiRequest.call(this, 'POST', `${base}/query`, {
-					sql: this.getNodeParameter('sql', i) as string,
-					params: Array.isArray(params) ? params : [params],
-				});
-				const rows = (response.rows as IDataObject[]) ?? [];
-				return rows.length ? rows : { command: response.command, row_count: response.row_count };
+			case 'deleteRows': {
+				const where = conditionsToWhere(this.getNodeParameter('conditions', i, {}) as never, columns);
+				if (!Object.keys(where).length) {
+					throw new NodeOperationError(this.getNode(), 'Add at least one condition', {
+						itemIndex: i,
+						description: 'This protects you from deleting every row of the table by mistake.',
+					});
+				}
+				return kleapApiRequest.call(this, 'DELETE', rowsUrl, { where });
 			}
 		}
 	}

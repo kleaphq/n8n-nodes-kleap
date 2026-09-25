@@ -2,6 +2,8 @@ import type {
 	IDataObject,
 	IExecuteFunctions,
 	INodePropertyOptions,
+	ResourceMapperField,
+	ResourceMapperFields,
 	IHttpRequestMethods,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
@@ -325,16 +327,128 @@ export function simplifySubmission(submission: IDataObject, appId: string): IDat
 	};
 }
 
-export async function getTables(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const locator = this.getCurrentNodeParameter('appId') as { value?: string | number } | undefined;
-	const appId = String(locator?.value ?? '').trim();
-	if (!/^\d+$/.test(appId)) return [];
+/* ----------------------------- database helpers ----------------------------- */
+
+export interface DbColumn {
+	name: string;
+	type: string;
+	nullable: boolean;
+	default: string | null;
+	primary_key: boolean;
+}
+
+interface DbTable {
+	name: string;
+	row_count: number | null;
+	columns: DbColumn[];
+}
+
+/** App id for dropdowns: the locator may hold an id, a site URL or a domain. */
+async function currentAppId(this: ILoadOptionsFunctions): Promise<string | undefined> {
+	const locator = this.getCurrentNodeParameter('appId') as { value?: string | number } | string | undefined;
+	const raw = String(typeof locator === 'object' ? (locator?.value ?? '') : (locator ?? '')).trim();
+	if (!raw) return undefined;
+	if (/^\d+$/.test(raw)) return raw;
+	try {
+		const match = await kleapApiRequest.call(this, 'GET', '/apps/resolve', undefined, { q: raw });
+		return match.app_id ? String(match.app_id) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function fetchTables(this: KleapContext, appId: string): Promise<DbTable[]> {
 	const schema = await kleapApiRequest.call(this, 'GET', `/apps/${appId}/database`);
-	return ((schema.tables as IDataObject[]) ?? []).map((t) => ({
-		name: t.name as string,
-		value: t.name as string,
-		description: t.row_count != null ? `${t.row_count as number} rows` : undefined,
+	return (schema.tables as unknown as DbTable[]) ?? [];
+}
+
+export async function fetchColumns(this: KleapContext, appId: string, table: string): Promise<DbColumn[]> {
+	const tables = await fetchTables.call(this, appId);
+	return tables.find((t) => t.name === table)?.columns ?? [];
+}
+
+export async function getTables(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const appId = await currentAppId.call(this);
+	if (!appId) return [];
+	const tables = await fetchTables.call(this, appId);
+	return tables.map((t) => ({
+		name: t.name,
+		value: t.name,
+		description: t.row_count != null && t.row_count >= 0 ? `~${t.row_count} rows` : undefined,
 	}));
+}
+
+export async function getColumns(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const appId = await currentAppId.call(this);
+	const table = this.getCurrentNodeParameter('table') as string | undefined;
+	if (!appId || !table) return [];
+	const columns = await fetchColumns.call(this, appId, table);
+	return columns.map((c) => ({ name: c.name, value: c.name, description: c.type }));
+}
+
+function fieldType(pgType: string): ResourceMapperField['type'] {
+	const t = pgType.toLowerCase();
+	if (/int|numeric|decimal|real|double|serial|float/.test(t)) return 'number';
+	if (t.startsWith('bool')) return 'boolean';
+	if (t.startsWith('timestamp') || t === 'date') return 'dateTime';
+	if (t.startsWith('json')) return 'object';
+	if (t.endsWith('[]') || t.startsWith('_')) return 'array';
+	return 'string';
+}
+
+/** Columns for the "Columns" mapper: one field per column, filled by hand or mapped automatically. */
+export async function getMappingColumns(this: ILoadOptionsFunctions): Promise<ResourceMapperFields> {
+	const appId = await currentAppId.call(this);
+	const table = this.getCurrentNodeParameter('table') as string | undefined;
+	if (!appId || !table) {
+		return { fields: [], emptyFieldsNotice: 'Pick the app and the table first' };
+	}
+	const columns = await fetchColumns.call(this, appId, table);
+	return {
+		fields: columns.map((c) => ({
+			id: c.name,
+			displayName: c.name,
+			// A column the database fills itself (id, created_at…) never has to be typed in.
+			required: !c.nullable && c.default === null,
+			defaultMatch: c.primary_key,
+			canBeUsedToMatch: true,
+			display: true,
+			type: fieldType(c.type),
+		})),
+		emptyFieldsNotice: 'This table has no columns',
+	};
+}
+
+/** Turns what the user typed into the value the column expects ("12" → 12 for a number column). */
+export function coerceForColumn(value: unknown, column: DbColumn | undefined): unknown {
+	if (value === '' || value === undefined) return value;
+	if (!column || typeof value !== 'string') return value;
+	const type = fieldType(column.type);
+	if (type === 'number' && value.trim() !== '' && !Number.isNaN(Number(value))) return Number(value);
+	if (type === 'boolean' && /^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
+	if (type === 'object' || type === 'array') {
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
+	}
+	return value;
+}
+
+export function conditionsToWhere(
+	conditions: { condition?: Array<{ column?: string; value?: unknown }> } | undefined,
+	columns: DbColumn[],
+): IDataObject {
+	const where: IDataObject = {};
+	for (const c of conditions?.condition ?? []) {
+		if (!c.column) continue;
+		where[c.column] = coerceForColumn(
+			c.value,
+			columns.find((col) => col.name === c.column),
+		) as IDataObject[string];
+	}
+	return where;
 }
 
 /** Reads a `json` parameter that n8n may hand back as a string or as an already-parsed value. */
