@@ -15,7 +15,7 @@ See the [n8n community nodes guide](https://docs.n8n.io/integrations/community-n
 
 ## Credentials
 
-1. Sign in to [kleap.co](https://kleap.co) and open **Settings → API key**.
+1. Sign in to [kleap.co](https://kleap.co) and open **https://kleap.co/settings/api-key**.
 2. Create a key with the **Full** preset. It covers every operation of this node, including database access and domain checkout. A key created before September 2026 may lack the `database:*` and `domains:checkout` scopes; the node then fails with `INSUFFICIENT_SCOPE`. Create a new key to fix this.
 3. In n8n, create a **Kleap API** credential and paste the key (`kleap_live_sk_…`).
 

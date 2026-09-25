@@ -25,7 +25,7 @@ export class KleapApi implements ICredentialType {
 			required: true,
 			placeholder: 'kleap_live_sk_...',
 			description:
-				'Create one at kleap.co → Settings → API key. The "full" preset covers every operation of this node except buying domains.',
+				'Create one at https://kleap.co/settings/api-key. The "full" preset covers every operation of this node except buying domains.',
 		},
 		{
 			displayName: 'Base URL',
