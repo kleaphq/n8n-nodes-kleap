@@ -312,3 +312,47 @@ test('trigger: new app', async () => {
 	const [out] = await poll(ctx());
 	assert.deepEqual(out.map((o) => o.json.id), [6]);
 });
+
+test('RATE_LIMITED is retried after retry_after, other errors are not', async () => {
+	let calls = 0;
+	const ctx = makeContext({
+		params: { resource: 'account', operation: 'getCredits' },
+		http: () => {
+			calls++;
+			if (calls === 1) throw httpError(429, { error: { code: 'RATE_LIMITED', message: 'slow down', details: { retry_after: 0.01 } } });
+			return { credits_balance: 10 };
+		},
+	});
+	const [[out]] = await run(ctx);
+	assert.equal(out.json.credits_balance, 10);
+	assert.equal(calls, 2);
+
+	let calls2 = 0;
+	const ctx2 = makeContext({
+		params: { resource: 'account', operation: 'getCredits' },
+		http: () => {
+			calls2++;
+			throw httpError(402, { error: { code: 'INSUFFICIENT_CREDITS', message: 'no' } });
+		},
+	});
+	await assert.rejects(run(ctx2), /INSUFFICIENT_CREDITS/);
+	assert.equal(calls2, 1);
+});
+
+test('publish ignores a stale "published" that describes the previous deploy', async () => {
+	let statusCalls = 0;
+	const old = new Date(Date.now() - 3600_000).toISOString();
+	const ctx = makeContext({
+		params: { resource: 'app', operation: 'publish', appId: app(12), waitForLive: true, timeoutMinutes: 5 },
+		http: (req) => {
+			if (req.method === 'POST') return { id: 12, status: 'deploying', deploy_key: 'u:12' };
+			statusCalls++;
+			return statusCalls < 3
+				? { status: 'published', production_url: 'https://x.kleap.io', published_at: old }
+				: { status: 'published', production_url: 'https://x.kleap.io', published_at: new Date().toISOString() };
+		},
+	});
+	const [[out]] = await run(ctx);
+	assert.equal(statusCalls, 3);
+	assert.notEqual(out.json.published_at, old);
+});

@@ -130,9 +130,38 @@ export async function kleapApiRequest(
 	qs?: IDataObject,
 	options: { timeout?: number } = {},
 ): Promise<IDataObject> {
-	const result = await kleapApiRequestRaw.call(this, method, endpoint, body, qs, options);
+	const result = await requestWithBackoff.call(this, method, endpoint, body, qs, options);
 	if (result.ok) return result.data;
 	throw toNodeApiError.call(this, result);
+}
+
+// RATE_LIMITED (30 req/min, 2 concurrent builds) and SERVICE_BUSY are refused before anything
+// happens server-side, so retrying them cannot create a duplicate.
+const RETRYABLE_CODES = new Set(['RATE_LIMITED', 'SERVICE_BUSY']);
+const MAX_RETRIES = 2;
+
+async function requestWithBackoff(
+	this: KleapContext,
+	method: IHttpRequestMethods,
+	endpoint: string,
+	body?: IDataObject,
+	qs?: IDataObject,
+	options: { timeout?: number } = {},
+): Promise<RawResult> {
+	for (let attempt = 0; ; attempt++) {
+		const result = await kleapApiRequestRaw.call(this, method, endpoint, body, qs, options);
+		if (result.ok || attempt >= MAX_RETRIES) return result;
+		const code = result.kleapError?.code;
+		if (!code || !RETRYABLE_CODES.has(code)) return result;
+		const hinted = Number(result.kleapError?.details?.retry_after ?? retryAfterHeader(result.error));
+		const seconds = Number.isFinite(hinted) && hinted > 0 ? Math.min(hinted, 60) : 20;
+		await sleep(seconds * 1000);
+	}
+}
+
+function retryAfterHeader(error: unknown): string | undefined {
+	const headers = (error as { response?: { headers?: Record<string, string> } })?.response?.headers;
+	return headers?.['retry-after'];
 }
 
 /** Same as kleapApiRequest, but returns the Kleap error code instead of throwing for the listed codes. */
@@ -143,7 +172,7 @@ export async function kleapApiRequestAllowing(
 	endpoint: string,
 	body?: IDataObject,
 ): Promise<{ data?: IDataObject; errorCode?: string; errorDetails?: IDataObject }> {
-	const result = await kleapApiRequestRaw.call(this, method, endpoint, body);
+	const result = await requestWithBackoff.call(this, method, endpoint, body);
 	if (result.ok) return { data: result.data };
 	const code = result.kleapError?.code;
 	if (code && allowedCodes.includes(code)) return { errorCode: code, errorDetails: result.kleapError?.details };
@@ -203,7 +232,11 @@ export async function publishAndWait(
 	waitForLive: boolean,
 	timeoutMinutes: number,
 ): Promise<IDataObject> {
+	// Before the new deploy is recorded, GET /publish can still describe the PREVIOUS publish as
+	// "published"; only a publish stamped after this moment counts as ours.
+	const requestedAt = Date.now();
 	const started = await kleapApiRequestAllowing.call(this, ['CONFLICT'], 'POST', `/apps/${appId}/publish`);
+	const joinedRunningDeploy = started.errorCode === 'CONFLICT';
 	const deployKey =
 		(started.data?.deploy_key as string | undefined) ??
 		(started.errorDetails?.deploy_key as string | undefined);
@@ -222,9 +255,12 @@ export async function publishAndWait(
 		status = await kleapApiRequest.call(this, 'GET', `/apps/${appId}/publish`, undefined, qs, {
 			timeout: LONG_POLL_TIMEOUT_MS,
 		});
-		if (status.status === 'published') return status;
+		if (status.status === 'published' && isFreshPublish(status, requestedAt, joinedRunningDeploy)) {
+			return status;
+		}
 		if (Date.now() >= deadline) return { ...status, wait_timed_out: true };
-		if (wait === 0) await sleep(3000);
+		// A stale "published" comes back at once instead of long-polling: pace the loop ourselves.
+		if (wait === 0 || status.status === 'published') await sleep(5000);
 	}
 }
 
@@ -316,4 +352,16 @@ export function parseJsonParameter(
 	} catch {
 		throw new NodeOperationError(this.getNode(), `"${name}" is not valid JSON`, { itemIndex });
 	}
+}
+
+/**
+ * A "published" answer is ours when it carries no timestamp (the workflow-finished shape), when
+ * we joined a deploy that was already running, or when its published_at is not older than our
+ * request (60 s of clock skew allowed).
+ */
+export function isFreshPublish(status: IDataObject, requestedAt: number, joinedRunningDeploy: boolean): boolean {
+	if (joinedRunningDeploy) return true;
+	const publishedAt = status.published_at ? Date.parse(status.published_at as string) : NaN;
+	if (Number.isNaN(publishedAt)) return true;
+	return publishedAt >= requestedAt - 60_000;
 }
