@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-kleap",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "n8n nodes for Kleap: build, edit and publish websites with AI from any workflow, and trigger on their form submissions.",
   "keywords": [
     "n8n-community-node-package",
